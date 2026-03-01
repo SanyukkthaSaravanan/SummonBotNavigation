@@ -1,0 +1,232 @@
+echo "# SummonBotNavigation" >> README.md
+git init
+git add README.md
+git commit -m "first commit"
+git branch -M main
+git remote add origin https://github.com/SanyukkthaSaravanan/SummonBotNavigation.git
+git push -u origin main
+
+const int destLedPin = 2;   // Destination LED
+const int trigPin = 4;
+const int echoPin = 5;
+const int ledPin  = 8;
+
+#define SOUND_SPEED 0.0343
+const float STOP_DIST_CM = 15.0;
+
+// ===================== MOTOR DRIVER (L298N) ==================
+// Left motor (Motor A)
+const int L_IN1 = 6;
+const int L_IN2 = 7;
+
+// Right motor (Motor B)
+const int R_IN3 = 10;
+const int R_IN4 = 3;
+
+// ===================== PATH TYPES ============================
+enum Action { FWD, LEFT_TURN, RIGHT_TURN, STOP };
+
+struct Step {
+  Action action;
+  unsigned long duration_ms;
+};
+
+// ===================== DEFINE YOUR 3 FIXED PATHS =============
+// Tune these durations for your floor.
+Step pathA[] = {
+  {FWD,  1800},
+  {LEFT_TURN, 450},
+  {FWD,  1500},
+  {STOP, 500}
+};
+
+Step pathB[] = {
+  {FWD,  2200},
+  {STOP, 500}
+};
+
+Step pathC[] = {
+  {FWD,  1800},
+  {RIGHT_TURN, 450},
+  {FWD,  1500},
+  {STOP, 500}
+};
+
+int lenA = sizeof(pathA) / sizeof(pathA[0]);
+int lenB = sizeof(pathB) / sizeof(pathB[0]);
+int lenC = sizeof(pathC) / sizeof(pathC[0]);
+
+// ===================== ZONE INPUT (TEMP FIXED) ===============
+enum Zone { ZONE_A, ZONE_B, ZONE_C };
+
+// Change this to test: ZONE_A / ZONE_B / ZONE_C
+Zone fixedZoneForNow = ZONE_B;
+
+// ===================== MOTOR HELPERS =========================
+void motorsStop() {
+  digitalWrite(L_IN1, LOW);
+  digitalWrite(L_IN2, LOW);
+  digitalWrite(R_IN3, LOW);
+  digitalWrite(R_IN4, LOW);
+}
+
+void motorsForward() {
+  digitalWrite(L_IN1, HIGH);
+  digitalWrite(L_IN2, LOW);
+  digitalWrite(R_IN3, HIGH);
+  digitalWrite(R_IN4, LOW);
+}
+
+void motorsTurnLeft() {
+  // Left backward, Right forward
+  digitalWrite(L_IN1, LOW);
+  digitalWrite(L_IN2, HIGH);
+  digitalWrite(R_IN3, HIGH);
+  digitalWrite(R_IN4, LOW);
+}
+
+void motorsTurnRight() {
+  // Left forward, Right backward
+  digitalWrite(L_IN1, HIGH);
+  digitalWrite(L_IN2, LOW);
+  digitalWrite(R_IN3, LOW);
+  digitalWrite(R_IN4, HIGH);
+}
+
+void runStep(Action a) {
+  if (a == FWD) motorsForward();
+  else if (a == LEFT_TURN) motorsTurnLeft();
+  else if (a == RIGHT_TURN) motorsTurnRight();
+  else motorsStop();
+}
+
+// ===================== ULTRASONIC ============================
+float readDistanceCm() {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(5);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+
+  long duration = pulseIn(echoPin, HIGH, 30000);  // 30ms timeout
+  if (duration == 0) return -1; // out of range/no echo
+
+  float distanceCm = (duration * SOUND_SPEED) / 2.0;
+  return distanceCm;
+}
+
+// ===================== ZONE INPUT (MOCK) =====================
+Zone getUserZone() {
+  // Later replace with Bluetooth subsystem result
+  return fixedZoneForNow;
+}
+
+// ===================== RUN PATH WITH IMMEDIATE STOP ==========
+void runPath(Step* path, int length) {
+  for (int i = 0; i < length; i++) {
+
+    unsigned long remaining = path[i].duration_ms;
+    unsigned long lastTick = millis();
+
+    Serial.print("Step ");
+    Serial.print(i);
+    Serial.print(" duration(ms)=");
+    Serial.println(remaining);
+
+    // Start this action
+    runStep(path[i].action);
+
+    while (remaining > 0) {
+
+      // Fast obstacle check
+      float d = readDistanceCm();
+
+      if (d > 0 && d <= STOP_DIST_CM) {
+        digitalWrite(ledPin, HIGH);
+        motorsStop();
+        Serial.println("Obstacle -> STOP immediately");
+
+        // Wait until obstacle clears (do NOT decrement remaining time)
+        while (true) {
+          delay(50);
+          float d2 = readDistanceCm();
+          if (d2 < 0 || d2 > STOP_DIST_CM) break;
+        }
+
+        digitalWrite(ledPin, LOW);
+        Serial.println("Cleared -> wait 2s then RESUME");
+        delay(2000);
+
+        // Resume same step
+        runStep(path[i].action);
+        lastTick = millis(); // reset timing
+        continue;
+      }
+
+      // Only count down time while moving
+      unsigned long now = millis();
+      unsigned long dt = now - lastTick;
+      lastTick = now;
+
+      if (dt >= remaining) remaining = 0;
+      else remaining -= dt;
+
+      delay(20); // reaction speed
+    }
+
+    motorsStop();
+    delay(150);
+  }
+
+  motorsStop();
+  Serial.println("Arrived at zone.");
+
+  // Turn destination LED ON
+  digitalWrite(destLedPin, HIGH);
+  Serial.println("Destination LED ON");
+
+  // Keep it ON for 5 seconds
+  delay(5000);
+
+  // Turn LED OFF
+  digitalWrite(destLedPin, LOW);
+  Serial.println("Destination LED OFF");
+}
+
+// ===================== SETUP/LOOP ============================
+void setup() {
+  Serial.begin(115200);
+
+  pinMode(destLedPin, OUTPUT);
+  digitalWrite(destLedPin, LOW);
+
+  pinMode(trigPin, OUTPUT);
+  pinMode(echoPin, INPUT);
+  pinMode(ledPin, OUTPUT);
+
+  pinMode(L_IN1, OUTPUT);
+  pinMode(L_IN2, OUTPUT);
+  pinMode(R_IN3, OUTPUT);
+  pinMode(R_IN4, OUTPUT);
+
+  motorsStop();
+  digitalWrite(ledPin, LOW);
+
+  Serial.println("SummonBot ready. Change fixedZoneForNow to test A/B/C.");
+}
+
+void loop() {
+  Zone z = getUserZone();
+
+  Serial.print("User zone: ");
+  if (z == ZONE_A) Serial.println("A");
+  if (z == ZONE_B) Serial.println("B");
+  if (z == ZONE_C) Serial.println("C");
+
+  if (z == ZONE_A) runPath(pathA, lenA);
+  else if (z == ZONE_B) runPath(pathB, lenB);
+  else runPath(pathC, lenC);
+
+  Serial.println("Done. Waiting 5s...\n");
+  delay(5000);
+}
